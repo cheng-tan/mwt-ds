@@ -2,10 +2,12 @@
 # ==========================================================================================
 # Find feature importance
 # ==========================================================================================
+from DashboardMpi.helpers import vw, grid, sweep
+
 
 '''
 Usage example:
->python FeatureImportance.py -d data.json --ml_args "--cb_adf -l 0.01 --cb_type mtr" -m model.vw -n 5
+>python FeatureImportance.py -d data.json --ml_args "--cb_adf -l 0.01 --cb_type mtr" -n 5
 
 Sample output:
 =====================================
@@ -45,14 +47,23 @@ def get_pretty_feature(feature):
         tokens[0] = 'Action'
     return '.'.join(tokens)
 
+
 def get_pretty_features(features):
     featurelist = features.split('*')
     pretty_feature_list = list(map(get_pretty_feature, featurelist))
     return " with ".join(pretty_feature_list)
 
+
 def extract_features(fp, inv_hash):
     features = []
-    text = open(fp).read().split('\n:0\n',1)[1].strip()
+    with open(fp, 'r') as readable_model:
+        for line in readable_model:
+            if line.strip() == ':1':
+                text = readable_model.read().split('\ncurrent_pass 1\n',1)[1].strip()
+                break
+            elif line.strip() == ':0':
+                text = readable_model.read().split('\n:0\n',1)[1].strip()
+                break
     if '\n' not in text:
         print ('no features found in model output file: {0}'.format(fp))
     else:
@@ -65,18 +76,19 @@ def extract_features(fp, inv_hash):
     return features
 
 # read the invert hash file and return a dictionary that maps from hash value to feature.
-def get_feature_inv_hash(fp):
+def get_feature_inv_hash(invert_hash_list):
     inv_hash = {}
-    text = open(fp).read().split('\n:0\n',1)[1].strip()
-    if '\n' not in text:
-        print ('no features found in invert has file: {0}.'.format(fp))
-    else:
-        for line in text.splitlines():
-            data = line.split(':')
-            if (len(data) == 3):
-                inv_hash[data[1]] = data[0]
-    return inv_hash
-    
+    for fp in invert_hash_list:
+        text = open(fp).read().split('\n:0\n',1)[1].strip()
+        if '\n' not in text:
+            print ('no features found in invert has file: {0}.'.format(fp))
+        else:
+            for line in text.splitlines():
+                data = line.split(':')
+                if (len(data) == 3) and not data[1] in inv_hash:
+                    inv_hash[data[1]] = data[0]
+        return inv_hash
+
 # return unique buckets of features from the feature funnel.
 # sample: input => [['c','b','a','d','e'],['b','c','a'],['a']] returns output => [['a'], ['b', 'c'], ['d', 'e']]
 def get_feature_buckets(features_funnel):
@@ -90,10 +102,8 @@ def get_feature_buckets(features_funnel):
             union_features.extend(unique_features)
     return feature_buckets
 
-def get_feature_importance(log_file, ml_args, warmstart_model=None, min_num_features=5):
-    invHash_fp = log_file+'.invHash.txt'
-
-    if ' --l1 ' in ml_args: 
+def get_feature_importance(env, ml_args, min_num_features):
+    if ' --l1 ' in ml_args:
         temp = ml_args.split(' --l1 ',1)
         ml_args = temp[0]
         if ' ' in temp[1]:
@@ -104,70 +114,41 @@ def get_feature_importance(log_file, ml_args, warmstart_model=None, min_num_feat
             l1 = float(temp[1])
     else:
         l1 = 1e-7
-    
-    vw_base = 'vw ' + ml_args + ' --dsjson --data {0} --quiet'.format(log_file)
-    if warmstart_model:
-        vw_base += ' -i {0}'.format(warmstart_model)
 
+    inv_hash = get_feature_inv_hash(env.invert_hash_provider.list())
     print('\n=====================================')
-    print('Generating invert hash file to map the hash to feature names')
 
-    vw_inv_hash_cmd = vw_base + ' --invert_hash {0}'.format(invHash_fp)
-    print('command to get invert hash file: ' + vw_inv_hash_cmd)
-    os.system(vw_inv_hash_cmd)
-    inv_hash = get_feature_inv_hash(invHash_fp)
-
-    print('\n=====================================')
     print('Testing a range of L1 regularization')
     all_features_funnel = []
-    index = 0
-    max_run_count = 20
-    while True:
-        readModel_fp = log_file+'.readModel.{0}.txt'.format(index)
-        vw_readable_model_cmd_base = vw_base + ' --readable_model {0}'.format(readModel_fp)
-        vw_readable_model_cmd = vw_readable_model_cmd_base + ' -c --l1 {0}'.format(l1)
-        index += 1
-        os.system(vw_readable_model_cmd)
-        features = extract_features(readModel_fp, inv_hash)
+    fi_base = {'#base': ml_args + ' --dsjson --readable_model'}
+    fi_grid = grid.generate_fi_grid(l1)
+    fi_candidates = sweep.sweep(fi_grid, env, fi_base)
+
+    for index, fp in enumerate(env.readable_model_provider.list()):
+        l1 = float(fi_grid[0].points[index]['--l1'])
+        features = extract_features(fp, inv_hash)
         num_features = len(features)
-        print('L1: {0:.0e} - Num of Features: {1}, File - {2}'.format(l1, num_features, os.path.basename(readModel_fp)))
-        
+        print('L1: {0:.0e} - Num of Features: {1}, File - {2}'.format(l1, num_features, os.path.basename(fp)))
         all_features_funnel.append(features)
-        
+
         # If we fall below the minimum number of features, then break out of the loop.
         if num_features < min_num_features:
             print('Number of features is {0} which is below the minimum of {1}. Exiting the loop with L1 value of: {2:.0e}'.format(num_features, min_num_features, l1))
             break
-            
-        # Add a max run count so we avoid getting stuck in an infinite loop for any special case.
-        if index > max_run_count:
-            print('Run count exceeds max run count. Exiting the loop with L1 value of: {0:.0e}'.format(l1))
-            break
-        else:
-            l1 *= 10
+
     print("feature funnel sizes: {0}".format([len(features) for features in all_features_funnel]))
     feature_buckets = get_feature_buckets(all_features_funnel)
     not_required_features = ['constant', 'action.constant']
     pretty_feature_buckets = [[get_pretty_features(feature) for feature in feature_bucket] for feature_bucket in feature_buckets]
     pretty_feature_buckets = [[f for f in bucket if f.lower() not in not_required_features] for bucket in pretty_feature_buckets]
     return [feature_buckets, pretty_feature_buckets]
-    
+
+
 def add_parser_args(parser):
-    parser.add_argument('-d', '--data', type=str, help="input log file.", required=True)
     parser.add_argument('--ml_args', help="ML arguments (default: --cb_adf -l 0.01)", default='--cb_adf -l 0.01')
-    parser.add_argument('-m', '--model', type=str, help="VW warmstart_model.", default=None)
     parser.add_argument('-n', '--min_num_features', type=str, help="Minimum Number of features.", default='5')
 
-def main(args):
-    try:
-        check_output(['vw','-h'], stderr=DEVNULL)
-    except:
-        print("Error: Vowpal Wabbit executable not found. Please install and add it to your path")
-        sys.exit()
-    return get_feature_importance(args.data, args.ml_args, args.model, int(args.min_num_features))
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    add_parser_args(parser)
-    feature_importance = main(parser.parse_args())
-    print("feature importance sizes: {0}".format([len(features) for features in feature_importance]))
+def main(env, args):
+    vw.check_vw_installed(env.logger)
+    return get_feature_importance(env, args.ml_args, int(args.min_num_features))

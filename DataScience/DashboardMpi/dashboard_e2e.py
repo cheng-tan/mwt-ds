@@ -2,16 +2,15 @@ import argparse
 import datetime
 import os
 import json
-from subprocess import check_output, STDOUT
-from shutil import rmtree
+from subprocess import check_output
 from azure.storage.blob import BlockBlobService
 from DashboardMpi.helpers import vw, preprocessing, grid, sweep, command, dashboard
 from DashboardMpi.helpers.environment import Environment
 from DashboardMpi.helpers.constant import LOG_CHUNK_SIZE
 from DashboardMpi.helpers.input_provider import AzureLogsProvider
+import FeatureImportance
 
-
-def dashboard_e2e(args, delta_mod_t=3600, max_connections=50):
+def dashboard_e2e(args, other_args, delta_mod_t=3600, max_connections=50):
     connection_string = args.connection_string
     account_name = args.account_name
     sas_token = args.sas_token
@@ -25,6 +24,7 @@ def dashboard_e2e(args, delta_mod_t=3600, max_connections=50):
     output_path = args.output_path
     enable_sweep = args.enable_sweep
     summary_json = args.summary_json
+    get_feature_importance = args.get_feature_importance
 
     log_type = args.log_type
 
@@ -46,7 +46,7 @@ def dashboard_e2e(args, delta_mod_t=3600, max_connections=50):
     else:
         base = '--cb_adf'
 
-    base_command = {'#base': base + ' --dsjson --compressed --save_resume --preserve_performance_counters'}
+    base_command = {'#base': base + ' --dsjson'}
 
     namespaces = set()
     marginals_grid = []
@@ -82,29 +82,33 @@ def dashboard_e2e(args, delta_mod_t=3600, max_connections=50):
 
             env.logger.info(local_log_path + ': Done.')
 
-            if enable_sweep:
-                if (blob_index == 0 and index == 0):
-                    vw.check_vw_installed(env.logger)
+            if enable_sweep and blob_index == 0 and index == 0:
+                vw.check_vw_installed(env.logger)
 
-                    namespaces = preprocessing.extract_namespaces(open(local_log_path, 'r', encoding='utf-8'), log_type)
+                namespaces = preprocessing.extract_namespaces(open(local_log_path, 'r', encoding='utf-8'), log_type)
 
-                    marginals_grid = preprocessing.get_marginals_grid('#marginals', namespaces[2])
+                marginals_grid = preprocessing.get_marginals_grid('#marginals', namespaces[2])
 
-                    interactions_grid = preprocessing.get_interactions_grid('#interactions', namespaces[0], namespaces[1])
+                interactions_grid = preprocessing.get_interactions_grid('#interactions', namespaces[0], namespaces[1])
 
-                    env.logger.info("namespaces: " + str(namespaces))
-                vw.cache(base_command, env, local_log_path)
+                env.logger.info("namespaces: " + str(namespaces))
+
+            if get_feature_importance:
+                vw.prep(base_command, env, local_log_path, 'invert_hash')
+            if enable_sweep or get_feature_importance:
+                vw.prep(base_command, env, local_log_path, 'cache')
 
             index += 1
 
-            if log_type == 'cb':
-                env.local_logs_provider.get_metadata(local_log_path)
+            # if log_type == 'cb':
+            #     env.local_logs_provider.get_metadata(local_log_path)
+
+    # output_bbs = BlockBlobService(connection_string=output_connection_string)
 
     # Evaluate custom policies
     if summary_json:
         env.logger.info('Evaluating custom policies')
         local_summary_file_path = os.path.join(tmp_folder, summary_json)
-        output_bbs = BlockBlobService(connection_string=output_connection_string)
 
         AzureLogsProvider.download_blob(
             output_bbs,
@@ -155,14 +159,40 @@ def dashboard_e2e(args, delta_mod_t=3600, max_connections=50):
         ))
         vw.predict(commands, env)
 
-    local_dashboard_path = os.path.join(tmp_folder, 'dashboard.json')
-    dashboard.create(local_dashboard_path, env, commands, enable_sweep, log_type)
-    if env.runtime.is_master() and output_connection_string:
-        bbs = BlockBlobService(connection_string=output_connection_string)
-        env.logger.info(output_container + ':' + output_path + ': Uploading from ' + local_dashboard_path)
-        bbs.create_blob_from_path(output_container, output_path, local_dashboard_path, max_connections=4)
-        env.logger.info(output_container + ':' + output_path + ': Succeesfully uploaded')
+    # local_dashboard_path = os.path.join(tmp_folder, 'dashboard.json')
+    # dashboard.create(local_dashboard_path, env, commands, enable_sweep, log_type)
+    # if env.runtime.is_master() and output_connection_string:
+    #     env.logger.info(output_container + ':' + output_path + ': Uploading from ' + local_dashboard_path)
+    #     output_bbs.create_blob_from_path(output_container, output_path, local_dashboard_path, max_connections=4)
+    #     env.logger.info(output_container + ':' + output_path + ': Succeesfully uploaded')
 
+    if get_feature_importance:
+        feature_importance_filename = args.feature_importance_filename
+        feature_importance_raw_filename = args.feature_importance_raw_filename
+
+        env.logger.info('Generate Feature Importance')
+        feature_importance_parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
+        FeatureImportance.add_parser_args(feature_importance_parser)
+        other_args.append("--ml_args")
+        other_args.append(args.ml_args)
+        other_args.append('--min_num_features')
+        other_args.append('1')
+        fi_args, other_args = feature_importance_parser.parse_known_args(other_args)
+
+        feature_buckets, pretty_feature_buckets = FeatureImportance.main(env, fi_args)
+
+        # Feature importance values that are user-friendly strings
+        feature_importance_file_path = os.path.join(tmp_folder, feature_importance_filename)
+        with open(feature_importance_file_path, 'w') as feature_importance_file:
+            json.dump(pretty_feature_buckets, feature_importance_file)
+    #     azure_util.upload_to_blob(ld_args.app_id, os.path.join(main_args.output_folder, main_args.feature_importance_filename), feature_importance_file_path, True)
+
+        # Feature importance values that are hashes returned by vw
+        feature_importance_raw_file_path = os.path.join(tmp_folder, feature_importance_raw_filename)
+        with open(feature_importance_raw_file_path, 'w') as feature_importance_raw_file:
+            json.dump(feature_buckets, feature_importance_raw_file)
+    #     azure_util.upload_to_blob(ld_args.app_id, os.path.join(main_args.output_folder, main_args.feature_importance_raw_filename), feature_importance_raw_file_path, True)
+    #
     # Clean out logs directory
     if args.delete_logs_dir and os.path.isdir(tmp_folder):
         logs_dir = os.path.join(tmp_folder, 'logs')

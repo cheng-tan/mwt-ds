@@ -11,31 +11,44 @@ def _safe_to_float(str, default):
         return default
 
 
-def _cache(log_path, opts, env):
+def _prep(log_path, opts, env, vw_arg):
     opts['-d'] = log_path
-    opts['--cache_file'] = env.caches_provider.new_path(log_path)
+    if vw_arg == "cache":
+        opts['--cache_file'] = env.caches_provider.new_path(log_path)
+        opts['--compressed'] = ''
+        opts['--save_resume'] = ''
+        opts['--preserve_performance_counters'] = ''
+    elif vw_arg == "invert_hash":
+        opts['--invert_hash'] = env.invert_hash_provider.new_path(log_path)
     return (opts, run(build_command(opts), env.logger))
 
 
-def _cache_func(input):
-    return _cache(input[0], input[1], input[2])
+def _prep_func(input):
+    return _prep(input[0], input[1], input[2], input[3])
 
 
-def _cache_multi(opts, env, file_path):
+def _prep_multi(opts, env, file_path, vw_arg):
     input_files = [file_path]
-    inputs = list(map(lambda i: (i, opts, env), input_files))
-    return env.job_pool.map(_cache_func, inputs)
+    inputs = list(map(lambda i: (i, opts, env, vw_arg), input_files))
+    return env.job_pool.map(_prep_func, inputs)
 
 
-def _train(cache_path, opts, env):
+def _train(index, cache_path, opts, env):
+    if '--readable_model' in opts['#base']:
+        opts['#base'] += ' ' + env.readable_model_provider.new_path(index)
     opts['--cache_file'] = cache_path
+    opts['--compressed'] = ''
+    opts['--save_resume'] = ''
+    opts['--preserve_performance_counters'] = ''
+
     opts['-f'] = env.models_provider.new_path(cache_path, opts)
     result = (opts, run(build_command(opts), env.logger))
     return result
 
 
-def _train_func(input):
-    return _train(input[0], input[1], input[2])
+def _train_func(args):
+    index, input = args
+    return _train(index, input[0], input[1], input[2])
 
 
 def _update_opts(r):
@@ -52,7 +65,7 @@ def _train_multi(opts, env):
     cache_files = env.caches_provider.list()
     for index, cache in enumerate(cache_files):
         inputs = list(map(lambda o: (cache, o, env), opts))
-        result = env.job_pool.map(_train_func, inputs)
+        result = env.job_pool.map(_train_func, enumerate(inputs))
 
         if index == len(cache_files) - 1:
             return list(map(_process_result, result))
@@ -109,8 +122,8 @@ def build_command(opts):
     return command.to_commandline(opts)
 
 
-def cache(opts, env, file_path):
-    _cache_multi(opts, env, file_path)
+def prep(opts, env, file_path, vw_arg):
+    _prep_multi(opts, env, file_path, vw_arg)
     command.generalize(opts)
 
 

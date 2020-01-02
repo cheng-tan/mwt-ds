@@ -1,6 +1,6 @@
 import os
 from DashboardMpi.helpers import logger, runtime, pool
-from DashboardMpi.helpers.input_provider import CachesProvider, LocalLogsProvider, ModelsProvider, PredictionsProvider
+from DashboardMpi.helpers.input_provider import CachesProvider, LocalLogsProvider, ModelsProvider, PredictionsProvider, InvertHashProvider, ReadableModelProvider
 
 
 class Environment:
@@ -22,4 +22,10 @@ class Environment:
         )
         self.predictions_provider = PredictionsProvider(
             os.path.join(tmp_folder, 'predictions')
+        )
+        self.invert_hash_provider = InvertHashProvider(
+            os.path.join(tmp_folder, 'invert_hash')
+        )
+        self.readable_model_provider = ReadableModelProvider(
+            os.path.join(tmp_folder, 'fi_readable_models')
         )

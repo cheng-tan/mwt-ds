@@ -35,6 +35,31 @@ class CachesProvider(InputProvider):
         return super().new_path(cache_file_name, 'cache')
 
 
+class InvertHashProvider(InputProvider):
+    def __init__(self, folder, create=True):
+        super().__init__(folder, create)
+
+    def list(self):
+        pattern = os.path.join(self.folder, '*.invertHash.txt')
+        return super().list(pattern)
+
+    def new_path(self, input_path):
+        year, month, day = _get_date_from_path(input_path)
+        log_file_name = _get_file_name_from_path(input_path)
+        invert_hash_file_name = year + month + log_file_name
+        return super().new_path(invert_hash_file_name, 'invertHash.txt')
+
+class ReadableModelProvider(InputProvider):
+    def __init__(self, folder, create=True):
+        super().__init__(folder, create)
+
+    def list(self):
+        pattern = os.path.join(self.folder, '*.readableModel.txt')
+        return super().list(pattern)
+
+    def new_path(self, index):
+        return super().new_path(str(index).zfill(2), 'readableModel.txt')
+
 class LocalLogsProvider(InputProvider):
     def __init__(self, folder, create=True):
         super().__init__(folder, create)

@@ -67,10 +67,10 @@ if __name__ == '__main__':
 
     parser.add_argument('--log_type', help="cooked log format e.g. cb, ccb", default='cb')
 
-    args = parser.parse_args()
+    args, other_args = parser.parse_known_args()
 
     telemetry_client = get_telemetry_client(args.appInsightsInstrumentationKey)
 
     tmp_folder = args.tmp_folder
     os.makedirs(tmp_folder, exist_ok=True)
-    dashboard_e2e.dashboard_e2e(args)
+    dashboard_e2e.dashboard_e2e(args, other_args)
